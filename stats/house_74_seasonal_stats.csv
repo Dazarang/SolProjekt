@@ -1,0 +1,11 @@
+,Summer (Dec-Feb),Winter (Jun-Aug)
+Total Load (kWh),4683.566000001,5139.873333334001
+Total Generation (kWh),6824.656000000001,4353.434000000001
+Average Daily Load (kWh),52.039622222233334,55.868188405804354
+Average Daily Generation (kWh),75.82951111111112,47.319934782608705
+Max Daily Load (kWh),98.750666667,106.142666667
+Max Daily Generation (kWh),113.306,74.344
+Min Daily Load (kWh),30.116,25.966
+Min Daily Generation (kWh),8.790000000000001,5.004
+Self-Consumption (%),60.187121519399646,87.0548628967385
+Days with Excess Generation,70.0,42.0
