@@ -1,8 +1,6 @@
-# %%
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 from datetime import datetime, timedelta
 from scipy.interpolate import make_interp_spline
 
@@ -34,37 +32,25 @@ class ComprehensiveSolarAnalysis:
 
     def select_sample_houses(self, n_houses=5):
         """Select a sample of houses for analysis."""
-        np.random.seed(0)  # For reproducibility
+        # np.random.seed(0)  # For reproducibility
         # self.selected_houses = np.random.choice(self.customer_ids, size=n_houses, replace=False)
         self.selected_houses = np.array([73, 82, 141])
         return self.selected_houses
 
-    def calculate_metrics(self, house_id):
-        """Calculate self-consumption and self-sufficiency using daily averages."""
-        # Get data for specific house
-        house_load = self.house_load[house_id] + self.ev_load[house_id]
-        generation = self.generation[house_id]
+    def calculate_metrics(self, load, generation, period_mask=None):
+        """Calculate self-consumption and self-sufficiency using raw data."""
+        if period_mask is not None:
+            load = load[period_mask]
+            generation = generation[period_mask]
 
-        daily_load = house_load.groupby(house_load.index.hour).mean()
-        daily_generation = generation.groupby(generation.index.hour).mean()
+        # Calculate overlap for each timestep (30-min intervals)
+        overlap = np.minimum(load, generation)
 
-        daily_overlap = np.minimum(daily_load, daily_generation)
-        # Calculate self-consumption (Total production - Export) / Total production
-        # The minimum between load and generation at each timestep represents the amount actually used
-        # The difference between generation and this minimum would be the export
-        self_consumption = (np.sum(daily_overlap) / np.sum(daily_generation)) * 100
-        # Calculate self-sufficiency (Total consumption - Import) / Total consumption
-        # The self-consumed energy represents (Total consumption - Import)
-        self_sufficiency = (np.sum(daily_overlap) / np.sum(daily_load)) * 100
+        # Calculate metrics using raw data sums
+        self_consumption = (np.sum(overlap) / np.sum(generation)) * 100
+        self_sufficiency = (np.sum(overlap) / np.sum(load)) * 100
 
-        return {
-            "house_id": house_id,
-            "self_consumption [%]": self_consumption,
-            "self_sufficiency [%]": self_sufficiency,
-            "total_load [kWh]": np.sum(house_load),  # Keep total values for reference
-            "total_generation [kWh]": np.sum(generation),
-            "total_self_consumed [kWh]": np.sum(np.minimum(house_load, generation)),
-        }
+        return self_consumption, self_sufficiency
 
     def plot_daily_profile(self, house_id):
         """Create daily profile plot for a specific house with filled areas and smoothing."""
@@ -112,9 +98,9 @@ class ComprehensiveSolarAnalysis:
             0,
             y_house_smooth,
             alpha=0.4,
-            color="#3182bd",  # Strong blue
+            color="#3182bd",
             label="House Load",
-            edgecolor="#08519c",  # Darker blue edge
+            edgecolor="#08519c",
             linewidth=1,
         )
 
@@ -136,9 +122,9 @@ class ComprehensiveSolarAnalysis:
             0,
             y_gen_smooth,
             alpha=0.4,
-            color="#fd8d3c",  # Warm orange
+            color="#fd8d3c",
             label="Generation",
-            edgecolor="#d94801",  # Darker orange edge
+            edgecolor="#d94801",
             linewidth=1,
         )
 
@@ -148,9 +134,9 @@ class ComprehensiveSolarAnalysis:
             0,
             y_overlap_smooth,
             alpha=0.6,
-            color="#31a354",  # Vibrant green
+            color="#31a354",
             label="Self-Consumption",
-            edgecolor="#006d2c",  # Darker green edge
+            edgecolor="#006d2c",
             linewidth=1,
         )
 
@@ -164,17 +150,17 @@ class ComprehensiveSolarAnalysis:
         plt.xticks(range(0, 24), fontsize=12)
         plt.yticks(fontsize=12)
 
-        # Calculate self-consumption using original data for accuracy
-        daily_overlap = np.minimum(daily_total_load, daily_generation)
-        self_consumption = (np.sum(daily_overlap) / np.sum(daily_generation)) * 100
-        self_sufficiency = (np.sum(daily_overlap) / np.sum(daily_total_load)) * 100
+        # Calculate metrics using raw data
+        self_consumption, self_sufficiency = self.calculate_metrics(
+            total_load, generation
+        )
 
         # Add text annotations for metrics
         plt.text(
             0.02,
             0.95,
-            f"Average Self-Consumption: {self_consumption:.1f}%\n"
-            + f"Average Self-Sufficiency: {self_sufficiency:.1f}%",
+            f"Self-Consumption: {self_consumption:.1f}%\n"
+            + f"Self-Sufficiency: {self_sufficiency:.1f}%",
             transform=plt.gca().transAxes,
             fontsize=12,
             bbox=dict(facecolor="white", alpha=0.8),
@@ -184,7 +170,7 @@ class ComprehensiveSolarAnalysis:
         return plt.gcf()
 
     def plot_daily_average_for_season(self, house_id):
-        """Create smoothed average daily profile plots for summer (Dec-Feb) and winter (Jun-Aug) in subplots across all years."""
+        """Create smoothed average daily profile plots for summer (Dec-Feb) and winter (Jun-Aug) in subplots."""
         # Get separate data for house and EV
         pure_house_load = self.house_load[house_id]
         ev_load = self.ev_load[house_id]
@@ -194,7 +180,7 @@ class ComprehensiveSolarAnalysis:
         # Create figure with two subplots
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11.7, 16.5))
 
-        # Common font sizes
+        # font sizes
         title_font = 16
         label_font = 14
         tick_font = 12
@@ -203,6 +189,9 @@ class ComprehensiveSolarAnalysis:
         def process_seasonal_data(months, ax, season_name):
             seasonal_data = pd.DataFrame()
             year_count = 0
+
+            # Create season mask for raw data metrics
+            season_mask = pd.Series(False, index=total_load.index)
 
             # Process data for all available years
             years = [2019, 2020, 2021]  # All years in the dataset
@@ -216,12 +205,13 @@ class ComprehensiveSolarAnalysis:
                     mask = (pure_house_load.index.year == year_to_use) & (
                         pure_house_load.index.month == month
                     )
+                    season_mask = season_mask | mask
 
                     # Skip if no data for this period
                     if not mask.any():
                         continue
 
-                    # Group by hour and get mean for this month for each component
+                    # Group by hour and get mean for this month for each component (for visualization)
                     month_house = (
                         pure_house_load[mask]
                         .groupby(pure_house_load[mask].index.hour)
@@ -248,7 +238,7 @@ class ComprehensiveSolarAnalysis:
 
                     year_count += 1
 
-            # Calculate averages across all months and years
+            # Calculate averages across all months and years (for visualization)
             seasonal_data = seasonal_data / year_count
 
             # Create more granular x-axis for smoother interpolation
@@ -274,30 +264,29 @@ class ComprehensiveSolarAnalysis:
             y_total_smooth = np.maximum(spl_total(x_smooth), 0)
             y_gen_smooth = np.maximum(spl_gen(x_smooth), 0)
 
-            # Calculate overlap
+            # Calculate overlap for visualization
             y_overlap_smooth = np.minimum(y_total_smooth, y_gen_smooth)
 
-            # Plot house load
+            # Plot visualizations
             ax.fill_between(
                 x_smooth,
                 0,
                 y_house_smooth,
                 alpha=0.4,
-                color="#3182bd",  # Strong blue
+                color="#3182bd",
                 label="House Load",
-                edgecolor="#08519c",  # Darker blue edge
+                edgecolor="#08519c",
                 linewidth=1,
             )
 
-            # Plot EV load stacked on top of house load
             ax.fill_between(
                 x_smooth,
                 y_house_smooth,
                 y_house_smooth + y_ev_smooth,
                 alpha=0.4,
-                color="#756bb1",  # Purple for EV
+                color="#756bb1",
                 label="EV Load",
-                edgecolor="#54278f",  # Darker purple edge
+                edgecolor="#54278f",
                 linewidth=1,
             )
 
@@ -306,9 +295,9 @@ class ComprehensiveSolarAnalysis:
                 0,
                 y_gen_smooth,
                 alpha=0.4,
-                color="#fd8d3c",  # Warm orange
+                color="#fd8d3c",
                 label="Generation",
-                edgecolor="#d94801",  # Darker orange edge
+                edgecolor="#d94801",
                 linewidth=1,
             )
 
@@ -317,22 +306,16 @@ class ComprehensiveSolarAnalysis:
                 0,
                 y_overlap_smooth,
                 alpha=0.6,
-                color="#31a354",  # Vibrant green
+                color="#31a354",
                 label="Self-Consumption",
-                edgecolor="#006d2c",  # Darker green edge
+                edgecolor="#006d2c",
                 linewidth=1,
             )
 
-            # Calculate self-consumption and self-sufficiency using original data for accuracy
-            seasonal_overlap = np.minimum(
-                seasonal_data["total"], seasonal_data["generation"]
+            # Calculate metrics using raw data
+            self_consumption, self_sufficiency = self.calculate_metrics(
+                total_load, generation, season_mask
             )
-            self_consumption = (
-                np.sum(seasonal_overlap) / np.sum(seasonal_data["generation"])
-            ) * 100
-            self_sufficiency = (
-                np.sum(seasonal_overlap) / np.sum(seasonal_data["total"])
-            ) * 100
 
             ax.set_title(
                 f"{season_name} Average Daily Profile (3-Year Average) - House {house_id}",
@@ -344,16 +327,14 @@ class ComprehensiveSolarAnalysis:
             ax.grid(True, alpha=0.3)
             ax.set_xticks(range(0, 24))
             ax.tick_params(axis="both", which="major", labelsize=tick_font)
-
-            # Set reasonable x-axis limits
             ax.set_xlim(0, 23)
 
             # Add self-consumption and self-sufficiency percentages
             ax.text(
                 0.02,
                 0.95,
-                f"Average Daily Self-Consumption: {self_consumption:.1f}%\n"
-                + f"Average Daily Self-Sufficiency: {self_sufficiency:.1f}%",
+                f"Seasonal Self-Consumption: {self_consumption:.1f}%\n"
+                + f"Seasonal Self-Sufficiency: {self_sufficiency:.1f}%",
                 transform=ax.transAxes,
                 fontsize=tick_font,
                 bbox=dict(facecolor="white", alpha=0.8),
@@ -378,7 +359,7 @@ class ComprehensiveSolarAnalysis:
 
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11.7, 16.5))
 
-        # Common font sizes
+        # font sizes
         title_font = 16
         label_font = 14
         tick_font = 12
@@ -387,6 +368,9 @@ class ComprehensiveSolarAnalysis:
         def process_seasonal_data(season_months, ax, season_name):
             seasonal_data = pd.DataFrame()
             year_count = 0
+
+            # Create season mask for raw data metrics
+            season_mask = pd.Series(False, index=house_load.index)
 
             # Process data for all available years
             years = [2019, 2020, 2021]  # All years in the dataset
@@ -400,6 +384,7 @@ class ComprehensiveSolarAnalysis:
                     mask = (house_load.index.year == year_to_use) & (
                         house_load.index.month == month
                     )
+                    season_mask = season_mask | mask
 
                     # Skip if no data for this period
                     if not mask.any():
@@ -421,7 +406,7 @@ class ComprehensiveSolarAnalysis:
 
                     year_count += 1
 
-            # Calculate average across all months and years
+            # Calculate average across all months and years (for visualization)
             seasonal_data = seasonal_data / year_count
             days = np.arange(len(seasonal_data))
 
@@ -440,7 +425,7 @@ class ComprehensiveSolarAnalysis:
             y_load_smooth = np.maximum(y_load_smooth, 0)
             y_gen_smooth = np.maximum(y_gen_smooth, 0)
 
-            # Calculate overlap
+            # Calculate overlap for visualization
             y_overlap_smooth = np.minimum(y_load_smooth, y_gen_smooth)
 
             # Plot smoothed data with improved colors and styling
@@ -449,9 +434,9 @@ class ComprehensiveSolarAnalysis:
                 0,
                 y_load_smooth,
                 alpha=0.4,
-                color="#3182bd",  # Strong blue
+                color="#3182bd",
                 label="Daily consumption (load + EV)",
-                edgecolor="#08519c",  # Darker blue edge
+                edgecolor="#08519c",
                 linewidth=1,
             )
 
@@ -460,9 +445,9 @@ class ComprehensiveSolarAnalysis:
                 0,
                 y_gen_smooth,
                 alpha=0.4,
-                color="#fd8d3c",  # Warm orange
+                color="#fd8d3c",
                 label="Daily generation",
-                edgecolor="#d94801",  # Darker orange edge
+                edgecolor="#d94801",
                 linewidth=1,
             )
 
@@ -471,22 +456,16 @@ class ComprehensiveSolarAnalysis:
                 0,
                 y_overlap_smooth,
                 alpha=0.6,
-                color="#31a354",  # Vibrant green
+                color="#31a354",
                 label="Self-Consumption",
-                edgecolor="#006d2c",  # Darker green edge
+                edgecolor="#006d2c",
                 linewidth=1,
             )
 
-            # Calculate self-consumption using original data for accuracy
-            seasonal_overlap = np.minimum(
-                seasonal_data["load"], seasonal_data["generation"]
+            # Calculate metrics using raw data
+            self_consumption, self_sufficiency = self.calculate_metrics(
+                house_load, generation, season_mask
             )
-            self_consumption = (
-                seasonal_overlap.sum() / seasonal_data["generation"].sum()
-            ) * 100
-            self_sufficiency = (
-                seasonal_overlap.sum() / seasonal_data["load"].sum()
-            ) * 100
 
             ax.set_title(
                 f"{season_name} - Average Hourly Energy (3-Year Average) - House {house_id}",
@@ -502,8 +481,8 @@ class ComprehensiveSolarAnalysis:
             ax.text(
                 0.02,
                 0.95,
-                f"Average Daily Self-Consumption: {self_consumption:.1f}%\n"
-                + f"Average Daily Self-Sufficiency: {self_sufficiency:.1f}%",
+                f"Seasonal Self-Consumption: {self_consumption:.1f}%\n"
+                + f"Seasonal Self-Sufficiency: {self_sufficiency:.1f}%",
                 transform=ax.transAxes,
                 fontsize=tick_font,
                 bbox=dict(facecolor="white", alpha=0.8),
@@ -531,7 +510,7 @@ class ComprehensiveSolarAnalysis:
         return fig
 
     def create_summary_report(self, selected_houses=None):
-        """Create a summary report for selected houses showing metrics based on daily averages."""
+        """Create a summary report for selected houses showing metrics based on raw data."""
         if selected_houses is None:
             selected_houses = self.selected_houses
 
@@ -543,29 +522,24 @@ class ComprehensiveSolarAnalysis:
             total_load = pure_house_load + ev_load
             generation = self.generation[house_id]
 
-            # Calculate daily averages
-            daily_house_load = pure_house_load.groupby(
-                pure_house_load.index.hour
-            ).mean()
-            daily_ev_load = ev_load.groupby(ev_load.index.hour).mean()
-            daily_total_load = total_load.groupby(total_load.index.hour).mean()
-            daily_generation = generation.groupby(generation.index.hour).mean()
+            # Calculate metrics using raw data
+            self_consumption, self_sufficiency = self.calculate_metrics(
+                total_load, generation
+            )
 
-            # Calculate overlap and metrics using daily averages
-            daily_overlap = np.minimum(daily_total_load, daily_generation)
-            self_consumption = (np.sum(daily_overlap) / np.sum(daily_generation)) * 100
-            self_sufficiency = (np.sum(daily_overlap) / np.sum(daily_total_load)) * 100
+            # Calculate overlap for total self-consumed calculation
+            overlap = np.minimum(total_load, generation)
 
             metrics = {
                 "house_id": house_id,
                 "self_consumption [%]": self_consumption,
                 "self_sufficiency [%]": self_sufficiency,
-                "total_house_load [kWh]": np.sum(pure_house_load) / 3,
+                "total_house_load [kWh]": np.sum(pure_house_load) / 3,  # 3 years
                 "total_ev_load [kWh]": np.sum(ev_load) / 3,
                 "total_combined_load [kWh]": np.sum(total_load) / 3,
                 "total_generation [kWh]": np.sum(generation) / 3,
-                "total_self_consumed [kWh]": np.sum(daily_overlap)
-                * 24,  # Adjust to daily total
+                "total_self_consumed [kWh]": np.sum(overlap)
+                / 3,  # Using raw data overlap
                 "ev_percentage [%]": (np.sum(ev_load) / np.sum(total_load)) * 100,
             }
             metrics_list.append(metrics)
@@ -573,16 +547,16 @@ class ComprehensiveSolarAnalysis:
         return pd.DataFrame(metrics_list)
 
     def print_seasonal_stats(self, house_id):
-        """Print seasonal statistics using hourly data averaged across all years."""
+        """Print seasonal statistics using raw data for metrics calculations."""
         pure_house_load = self.house_load[house_id]
         ev_load = self.ev_load[house_id]
         total_load = pure_house_load + ev_load
         generation = self.generation[house_id]
 
         def calculate_seasonal_stats(months):
+            # Create season mask for raw data metrics
+            season_mask = pd.Series(False, index=total_load.index)
             seasonal_data = pd.DataFrame()
-            averaged_data = pd.DataFrame()  # For self-consumption calculation
-            year_count = 0
 
             # Process data for all available years
             years = [2019, 2020, 2021]  # All years in the dataset
@@ -594,12 +568,13 @@ class ComprehensiveSolarAnalysis:
                     mask = (pure_house_load.index.year == year_to_use) & (
                         pure_house_load.index.month == month
                     )
+                    season_mask = season_mask | mask
 
                     # Skip if no data for this period
                     if not mask.any():
                         continue
 
-                    # Get hourly data for each component (for regular stats)
+                    # Get data for each component (for regular stats)
                     month_data = pd.DataFrame(
                         {
                             "house_load": pure_house_load[mask],
@@ -609,52 +584,22 @@ class ComprehensiveSolarAnalysis:
                         }
                     )
 
-                    # For self-consumption calculation (matching plot's method)
-                    month_load = total_load[mask].resample("h").sum()
-                    month_gen = generation[mask].resample("h").sum()
-
                     if seasonal_data.empty:
                         seasonal_data = month_data
-                        averaged_data["total_load"] = month_load
-                        averaged_data["generation"] = month_gen
                     else:
                         seasonal_data = pd.concat([seasonal_data, month_data])
-                        averaged_data["total_load"] = averaged_data["total_load"].add(
-                            month_load, fill_value=0
-                        )
-                        averaged_data["generation"] = averaged_data["generation"].add(
-                            month_gen, fill_value=0
-                        )
 
-                    year_count += 1
-
-            # Average the data for self-consumption calculation (matching plot)
-            averaged_data = averaged_data / year_count
-
-            # Calculate self-consumption using averaged data (matching plot)
-            seasonal_overlap = np.minimum(
-                averaged_data["total_load"], averaged_data["generation"]
+            # Calculate metrics using raw data
+            self_consumption, self_sufficiency = self.calculate_metrics(
+                total_load, generation, season_mask
             )
-            self_consumption = (
-                seasonal_overlap.sum() / averaged_data["generation"].sum()
-            ) * 100
-            self_sufficiency = (
-                seasonal_overlap.sum() / averaged_data["total_load"].sum()
-            ) * 100
 
             # Calculate daily totals for daily statistics
             daily_data = seasonal_data.resample("D").sum()
-            seasonal_data_hourly = seasonal_data.resample("h").sum()
-
-            # Calculate average values across all years
-            num_periods = (
-                seasonal_data.index.nunique() / 24
-            )  # Convert hours to days for proper averaging
 
             # Calculate EV percentage
             ev_percentage = (
-                seasonal_data["ev_load"].sum()
-                / seasonal_data_hourly["total_load"].sum()
+                seasonal_data["ev_load"].sum() / seasonal_data["total_load"].sum()
             ) * 100
 
             return {
@@ -662,18 +607,6 @@ class ComprehensiveSolarAnalysis:
                 "Total EV Load (kWh)": seasonal_data["ev_load"].sum() / 3,
                 "Total Combined Load (kWh)": seasonal_data["total_load"].sum() / 3,
                 "Total Generation (kWh)": seasonal_data["generation"].sum() / 3,
-                "Average Daily House Load (kWh)": daily_data["house_load"].mean(),
-                "Average Daily EV Load (kWh)": daily_data["ev_load"].mean(),
-                "Average Daily Total Load (kWh)": daily_data["total_load"].mean(),
-                "Average Daily Generation (kWh)": daily_data["generation"].mean(),
-                # 'Max Daily House Load (kWh)': daily_data['house_load'].max(),
-                # 'Max Daily EV Load (kWh)': daily_data['ev_load'].max(),
-                # 'Max Daily Total Load (kWh)': daily_data['total_load'].max(),
-                # 'Max Daily Generation (kWh)': daily_data['generation'].max(),
-                # 'Min Daily House Load (kWh)': daily_data['house_load'].min(),
-                # 'Min Daily EV Load (kWh)': daily_data['ev_load'].min(),
-                # 'Min Daily Total Load (kWh)': daily_data['total_load'].min(),
-                # 'Min Daily Generation (kWh)': daily_data['generation'].min(),
                 "Self-Consumption (%)": self_consumption,
                 "Self-Sufficiency (%)": self_sufficiency,
                 "EV Load Percentage (%)": ev_percentage,
@@ -699,7 +632,7 @@ import os
 
 def main():
     try:
-        # Create necessary directories
+        # Create directories
         os.makedirs("reports", exist_ok=True)
         os.makedirs("plots", exist_ok=True)
         os.makedirs("stats", exist_ok=True)
